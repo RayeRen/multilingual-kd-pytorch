@@ -10,13 +10,15 @@ Train a network across multiple GPUs.
 """
 
 from collections import OrderedDict
+from copy import deepcopy
 from itertools import chain
 
 import torch
 
-from fairseq import distributed_utils, models, optim, utils
+from fairseq import distributed_utils, models, optim, utils, tokenizer
 from fairseq.meters import AverageMeter, StopwatchMeter, TimeMeter
 from fairseq.optim import lr_scheduler
+from fairseq.sequence_generator import SequenceGenerator
 
 
 class Trainer(object):
@@ -50,7 +52,31 @@ class Trainer(object):
         self._optimizer = None
         self._wrapped_model = None
 
+        self._translator = SequenceGenerator(
+            [self.model],
+            self.task.target_dictionary,
+            beam_size=args.beam,
+            len_penalty=args.lenpen,
+            maxlen=args.max_len_b
+        )
+
         self.init_meters(args)
+
+        if args.finetune_params != '':
+            self._should_train = {}
+            for name, param in self.model.named_parameters():
+                should_finetune = False
+                is_excluded = False
+                for p_e in self.args.finetune_params_exclude.split(','):
+                    if p_e != '' and p_e in name:
+                        is_excluded = True
+                        break
+                if not is_excluded:
+                    for p in self.args.finetune_params.split(','):
+                        if p != '' and p in name:
+                            should_finetune = True
+                            break
+                self._should_train[name] = should_finetune
 
     def init_meters(self, args):
         self.meters = OrderedDict()
@@ -58,18 +84,17 @@ class Trainer(object):
         self.meters['train_nll_loss'] = AverageMeter()
         self.meters['valid_loss'] = AverageMeter()
         self.meters['valid_nll_loss'] = AverageMeter()
-        self.meters['wps'] = TimeMeter()       # words per second
-        self.meters['ups'] = TimeMeter()       # updates per second
-        self.meters['wpb'] = AverageMeter()    # words per batch
-        self.meters['bsz'] = AverageMeter()    # sentences per batch
+        self.meters['wps'] = TimeMeter()  # words per second
+        self.meters['ups'] = TimeMeter()  # updates per second
+        self.meters['wpb'] = AverageMeter()  # words per batch
+        self.meters['bsz'] = AverageMeter()  # sentences per batch
         self.meters['gnorm'] = AverageMeter()  # gradient norm
-        self.meters['clip'] = AverageMeter()   # % of updates clipped
-        self.meters['oom'] = AverageMeter()    # out of memory
+        self.meters['clip'] = AverageMeter()  # % of updates clipped
+        self.meters['oom'] = AverageMeter()  # out of memory
         if args.fp16:
             self.meters['loss_scale'] = AverageMeter()  # dynamic loss scale
-        self.meters['wall'] = TimeMeter()      # wall time in seconds
+        self.meters['wall'] = TimeMeter()  # wall time in seconds
         self.meters['train_wall'] = StopwatchMeter()  # train wall time in seconds
-
 
     @property
     def model(self):
@@ -218,9 +243,9 @@ class Trainer(object):
 
         if not all(k in logging_output for k in ['ntokens', 'nsentences']):
             raise Exception((
-                'Please update the {}.aggregate_logging_outputs() method to '
-                'return ntokens and nsentences'
-            ).format(self.task.__class__.__name__))
+                                'Please update the {}.aggregate_logging_outputs() method to '
+                                'return ntokens and nsentences'
+                            ).format(self.task.__class__.__name__))
 
         try:
             # normalize grads by sample size
@@ -228,6 +253,11 @@ class Trainer(object):
 
             # clip grads
             grad_norm = self.optimizer.clip_grad_norm(self.args.clip_norm)
+
+            if self.args.finetune_params != '':
+                for name, param in self.model.named_parameters():
+                    if not self.should_train(name):
+                        param.grad.data.zero_()
 
             # take an optimization step
             self.optimizer.step()
@@ -263,6 +293,13 @@ class Trainer(object):
         self.meters['train_wall'].stop()
 
         return logging_output
+
+    def test_bleu_step(self, sample, bleu_scorers, print_to_file=None):
+        with torch.no_grad():
+            self.model.eval()
+            sample = self._prepare_sample(sample)
+            if sample is not None:
+                self.test_bleu(sample, bleu_scorers, print_to_file)
 
     def valid_step(self, sample, raise_oom=False):
         """Do forward pass in evaluation mode."""
@@ -321,6 +358,45 @@ class Trainer(object):
 
         return logging_output
 
+    def test_bleu(self, sample, bleu_scorers, print_to_file=None):
+        if sample is None:
+            return
+
+        beam = self.args.beam
+        with torch.no_grad():
+            while True:
+                try:
+                    hypos = self._translator.generate({
+                        'src_tokens': sample['net_input']['src_tokens'],
+                        'src_lengths': sample['net_input']['src_lengths'],
+                        'lng': sample['net_input'].get('lng', None)
+                    }, beam)
+                    break
+                except RuntimeError as e:
+                    if 'out of memory' in str(e) and beam >= 3:
+                        beam = beam - 1
+                        print('| WARNING: ran out of memory, reduce beam size to %d' % beam)
+                    else:
+                        raise e
+
+            assert len(sample['target']) == len(hypos)
+            for dataset_id, tgt, hypo in zip(
+                    list(sample['dataset_id']) if 'dataset_id' in sample else list(torch.LongTensor([0] * len(hypos))),
+                    list(sample['target']),
+                    hypos
+            ):
+                dict = deepcopy(self.task.target_dictionary)
+                target_str = dict.string(tgt.int().cpu(), '@@ ', escape_unk=True)
+                target_tokens = tokenizer.Tokenizer.tokenize(
+                    target_str, dict, add_if_not_exist=True)
+                hypo_str = dict.string(hypo[0]['tokens'].int().cpu(), '@@ ')
+                hypo_tokens = tokenizer.Tokenizer.tokenize(
+                    hypo_str, dict, add_if_not_exist=True)
+                bleu_scorer_ = bleu_scorers[dataset_id.item()]
+                bleu_scorer_.add(target_tokens, hypo_tokens)
+                if print_to_file is not None:
+                    print_to_file(dataset_id.item(), target_str, hypo_str)
+
     def dummy_train_step(self, dummy_batch):
         """Dummy training step for warming caching allocator."""
         self.train_step(dummy_batch, dummy_batch=True)
@@ -359,3 +435,6 @@ class Trainer(object):
         if sample is None or len(sample) == 0:
             return None
         return utils.move_to_cuda(sample)
+
+    def should_train(self, p_name):
+        return self._should_train[p_name]

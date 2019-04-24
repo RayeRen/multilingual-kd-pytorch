@@ -13,6 +13,7 @@ import torch
 
 class Dictionary(object):
     """A mapping from symbols to consecutive integers"""
+
     def __init__(self, pad='<pad>', eos='</s>', unk='<unk>'):
         self.unk_word, self.pad_word, self.eos_word = unk, pad, eos
         self.symbols = []
@@ -57,7 +58,7 @@ class Dictionary(object):
             else:
                 return self[i]
 
-        sent = ' '.join(token_string(i) for i in tensor if i != self.eos())
+        sent = ' '.join(token_string(i) for i in tensor if i != self.eos() and i != self.pad())
         if bpe_symbol is not None:
             sent = (sent + ' ').replace(bpe_symbol, '').rstrip()
         return sent
@@ -180,7 +181,7 @@ class Dictionary(object):
         for line in f.readlines():
             idx = line.rfind(' ')
             word = line[:idx]
-            count = int(line[idx+1:])
+            count = int(line[idx + 1:])
             d.indices[word] = len(d.symbols)
             d.symbols.append(word)
             d.count.append(count)
@@ -199,6 +200,7 @@ class Dictionary(object):
         t = torch.Tensor(length).uniform_(self.nspecial + 1, len(self)).long()
         t[-1] = self.eos()
         return t
+
 
 class TruncatedDictionary(object):
 

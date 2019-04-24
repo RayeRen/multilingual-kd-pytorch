@@ -2,3 +2,5 @@ cffi
 numpy
 torch
 tqdm
+ujson
+tensorboardX

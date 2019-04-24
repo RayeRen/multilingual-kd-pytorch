@@ -105,3 +105,9 @@ ENV/
 
 # Generated files
 fairseq/temporal_convolution_tbc
+
+
+.idea
+philly
+tmp
+data/iwslt/raw/*.tgz

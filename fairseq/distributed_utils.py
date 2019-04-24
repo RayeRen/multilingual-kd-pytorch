@@ -8,6 +8,10 @@
 from collections import namedtuple
 import pickle
 
+import os
+
+# import redis
+import time
 import torch
 from torch import nn
 
@@ -18,11 +22,67 @@ def is_master(args):
     return args.distributed_rank == 0
 
 
+# redis_ip = os.environ.get("REDIS_IP", "127.0.0.1")
+# redis_port = os.environ.get("REDIS_PORT", "31483")
+# redis_db = redis.StrictRedis(host=redis_ip, port=redis_port, db=0, charset="utf-8", decode_responses=True)
+# redis_enable = redis_ip != ""
+redis_enable = False
+if not redis_enable:
+    print("| Redis disabled...")
+
+
+def start_redis():
+    if redis_enable:
+        os.system('echo "bind 0.0.0.0" > ~/redis.conf.tmp')
+        os.system('nohup redis-server ~/redis.conf.tmp --port {} --daemonize yes &'.format(redis_port))
+
+
+def reset_redis(args):
+    if redis_enable:
+        try:
+            for key in redis_db.scan_iter("{}:*".format(args.save_dir)):
+                redis_db.delete(key)
+        except redis.ConnectionError:
+            print("| ERR: redis does not start....")
+
+
+def stop_redis(args):
+    if redis_enable:
+        try:
+            for key in redis_db.scan_iter("{}:*".format(args.save_dir)):
+                redis_db.delete(key)
+        except redis.ConnectionError:
+            print("| ERR: redis does not start....")
+
+
+def wait_redis():
+    if redis_enable:
+        while True:
+            try:
+                redis_db.client_list()
+                break
+            except redis.ConnectionError:
+                print("wait redis to start....")
+                time.sleep(3)
+
+
+def barrier(args, key, total=None):
+    key = "{}:{}".format(args.save_dir, key)
+    if redis_enable:
+        total = total or args.distributed_world_size
+        try:
+            cnt = int(redis_db.incr(key))
+            while cnt < total:
+                time.sleep(0.1)
+                cnt = redis_db.get(key)
+                cnt = int(cnt)
+        except redis.ConnectionError:
+            print("| ERR: redis does not start....")
+
+
 _use_c10d = [True]
 
-
 C10dStatus = namedtuple('C10dStatus', ['has_c10d', 'is_default'])
-
 
 if hasattr(nn.parallel, 'deprecated'):
     c10d_status = C10dStatus(has_c10d=True, is_default=True)
@@ -30,7 +90,6 @@ elif hasattr(torch.distributed, 'c10d') and hasattr(torch.distributed.c10d, 'ini
     c10d_status = C10dStatus(has_c10d=True, is_default=False)
 else:
     c10d_status = C10dStatus(has_c10d=False, is_default=False)
-
 
 if c10d_status.is_default:
     import torch.distributed as dist_c10d
@@ -66,6 +125,15 @@ def distributed_init(args):
     )
 
     suppress_output(is_master(args))
+    if is_master(args):
+        # try:
+        #     start_redis()
+        # except:
+        #     print('| Redis was already started or failed.')
+        wait_redis()
+        reset_redis(args)
+    else:
+        wait_redis()
 
     return args.distributed_rank
 
@@ -139,21 +207,21 @@ def all_gather_list(data, group=None, max_size=16384):
     enc_size = len(enc)
     if enc_size + 2 > max_size:
         raise ValueError('encoded data exceeds max_size: {}'.format(enc_size + 2))
-    assert max_size < 255*256
+    assert max_size < 255 * 256
 
-    buffer_rank = buffer[rank * max_size : (rank + 1) * max_size]
+    buffer_rank = buffer[rank * max_size: (rank + 1) * max_size]
     buffer_rank[0] = enc_size // 255  # this encoding works for max_size < 65k
     buffer_rank[1] = enc_size % 255
-    buffer_rank[2:enc_size+2] = torch.ByteTensor(list(enc))
+    buffer_rank[2:enc_size + 2] = torch.ByteTensor(list(enc))
 
     all_reduce(buffer, group=group)
 
     result = []
     for i in range(world_size):
-        out_buffer = buffer[i * max_size : (i + 1) * max_size]
+        out_buffer = buffer[i * max_size: (i + 1) * max_size]
         size = (255 * utils.item(out_buffer[0])) + utils.item(out_buffer[1])
         if size > 0:
             result.append(
-                pickle.loads(bytes(out_buffer[2:size+2].tolist()))
+                pickle.loads(bytes(out_buffer[2:size + 2].tolist()))
             )
     return result

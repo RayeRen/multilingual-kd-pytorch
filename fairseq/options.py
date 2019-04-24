@@ -23,6 +23,7 @@ def get_training_parser(default_task='translation'):
     add_model_args(parser)
     add_optimization_args(parser)
     add_checkpoint_args(parser)
+    add_generation_args(parser)
     return parser
 
 
@@ -128,7 +129,7 @@ def get_parser(desc, default_task='translation'):
     parser.add_argument('--seed', default=1, type=int, metavar='N',
                         help='pseudo random number generator seed')
     parser.add_argument('--fp16', action='store_true', help='use FP16')
-    parser.add_argument('--fp16-init-scale', default=2**7, type=int,
+    parser.add_argument('--fp16-init-scale', default=2 ** 7, type=int,
                         help='default FP16 loss scale')
     parser.add_argument('--fp16-scale-window', type=int,
                         help='number of updates before increasing loss scale')
@@ -255,7 +256,7 @@ def add_checkpoint_args(parser):
                        help='save a checkpoint every N epochs')
     group.add_argument('--save-interval-updates', type=int, default=0, metavar='N',
                        help='save a checkpoint (and validate) every N updates')
-    group.add_argument('--keep-interval-updates', type=int, default=-1, metavar='N',
+    group.add_argument('--keep-interval-updates', type=int, default=1, metavar='N',
                        help='keep last N checkpoints saved with --save-interval-updates')
     group.add_argument('--no-save', action='store_true',
                        help='don\'t save models or checkpoints')
@@ -288,7 +289,7 @@ def add_eval_lm_args(parser):
 def add_generation_args(parser):
     group = parser.add_argument_group('Generation')
     add_common_eval_args(group)
-    group.add_argument('--beam', default=5, type=int, metavar='N',
+    group.add_argument('--beam', default=4, type=int, metavar='N',
                        help='beam size')
     group.add_argument('--nbest', default=1, type=int, metavar='N',
                        help='number of hypotheses to output')

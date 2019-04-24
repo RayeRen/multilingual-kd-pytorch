@@ -93,6 +93,7 @@ class TransformerModel(FairseqModel):
                                  'Must be used with adaptive_loss criterion'),
         parser.add_argument('--adaptive-softmax-dropout', type=float, metavar='D',
                             help='sets adaptive softmax dropout for the tail projections')
+        parser.add_argument('--decoder-lng-embed', action='store_true')
 
     @classmethod
     def build_model(cls, args, task):
@@ -140,8 +141,19 @@ class TransformerModel(FairseqModel):
                 tgt_dict, args.decoder_embed_dim, args.decoder_embed_path
             )
 
-        encoder = TransformerEncoder(args, src_dict, encoder_embed_tokens)
-        decoder = TransformerDecoder(args, tgt_dict, decoder_embed_tokens)
+        lng_embed = None
+        lng_len = None
+        if args.task == 'universal_translation' and task.dataset('train').universal:
+            lng_len = len(task.id2lng)
+            if args.decoder_lng_embed:
+                lng_embed = LngEmbedding(lng_len, args.encoder_embed_dim)
+            else:
+                lng_embed = LngEmbedding(2 * lng_len, args.encoder_embed_dim)
+            print("| [Universal] add language embeddings. lng size:{}. Decoder lng embed:{}"
+                  .format(lng_len, args.decoder_lng_embed))
+
+        encoder = TransformerEncoder(args, src_dict, encoder_embed_tokens, lng_embed=lng_embed, lng_len=lng_len)
+        decoder = TransformerDecoder(args, tgt_dict, decoder_embed_tokens, lng_embed=lng_embed)
         return TransformerModel(encoder, decoder)
 
 
@@ -259,15 +271,18 @@ class TransformerEncoder(FairseqEncoder):
             ``True``
     """
 
-    def __init__(self, args, dictionary, embed_tokens, left_pad=True):
+    def __init__(self, args, dictionary, embed_tokens, left_pad=True, lng_embed=None, lng_len=None):
         super().__init__(dictionary)
         self.dropout = args.dropout
+        self.args = args
 
         embed_dim = embed_tokens.embedding_dim
         self.padding_idx = embed_tokens.padding_idx
         self.max_source_positions = args.max_source_positions
 
         self.embed_tokens = embed_tokens
+        self.lng_embed = lng_embed
+        self.lng_len = lng_len
         self.embed_scale = math.sqrt(embed_dim)
         self.embed_positions = PositionalEmbedding(
             args.max_source_positions, embed_dim, self.padding_idx,
@@ -285,7 +300,7 @@ class TransformerEncoder(FairseqEncoder):
         if self.normalize:
             self.layer_norm = LayerNorm(embed_dim)
 
-    def forward(self, src_tokens, src_lengths):
+    def forward(self, src_tokens, src_lengths, lng):
         """
         Args:
             src_tokens (LongTensor): tokens in the source language of shape
@@ -302,6 +317,11 @@ class TransformerEncoder(FairseqEncoder):
         """
         # embed tokens and positions
         x = self.embed_scale * self.embed_tokens(src_tokens)
+        if self.lng_embed is not None:
+            x += self.lng_embed(lng[:, 0:1])
+            if not self.args.decoder_lng_embed:
+                x += self.lng_embed(lng[:, 1:2] + self.lng_len)
+
         if self.embed_positions is not None:
             x += self.embed_positions(src_tokens)
         x = F.dropout(x, p=self.dropout, training=self.training)
@@ -324,6 +344,7 @@ class TransformerEncoder(FairseqEncoder):
         return {
             'encoder_out': x,  # T x B x C
             'encoder_padding_mask': encoder_padding_mask,  # B x T
+            'lng': lng
         }
 
     def reorder_encoder_out(self, encoder_out, new_order):
@@ -340,6 +361,9 @@ class TransformerEncoder(FairseqEncoder):
         if encoder_out['encoder_out'] is not None:
             encoder_out['encoder_out'] = \
                 encoder_out['encoder_out'].index_select(1, new_order)
+        if encoder_out['lng'] is not None:
+            encoder_out['lng'] = \
+                encoder_out['lng'].index_select(0, new_order)
         if encoder_out['encoder_padding_mask'] is not None:
             encoder_out['encoder_padding_mask'] = \
                 encoder_out['encoder_padding_mask'].index_select(0, new_order)
@@ -382,9 +406,11 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             ``False``
     """
 
-    def __init__(self, args, dictionary, embed_tokens, no_encoder_attn=False, left_pad=False, final_norm=True):
+    def __init__(self, args, dictionary, embed_tokens, no_encoder_attn=False, left_pad=False, final_norm=True,
+                 lng_embed=None):
         super().__init__(dictionary)
         self.dropout = args.dropout
+        self.args = args
         self.share_input_output_embed = args.share_decoder_input_output_embed
 
         input_embed_dim = embed_tokens.embedding_dim
@@ -395,6 +421,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         self.max_target_positions = args.max_target_positions
 
         self.embed_tokens = embed_tokens
+        self.lng_embed = lng_embed
         self.embed_scale = math.sqrt(embed_dim)  # todo: try with input_embed_dim
 
         self.project_in_dim = Linear(input_embed_dim, embed_dim, bias=False) if embed_dim != input_embed_dim else None
@@ -464,6 +491,8 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
         # embed tokens and positions
         x = self.embed_scale * self.embed_tokens(prev_output_tokens)
+        if self.lng_embed is not None and self.args.decoder_lng_embed:
+            x += self.lng_embed(encoder_out['lng'][:, 1:2])
 
         if self.project_in_dim is not None:
             x = self.project_in_dim(x)
@@ -754,6 +783,12 @@ def Embedding(num_embeddings, embedding_dim, padding_idx):
     return m
 
 
+def LngEmbedding(num_embeddings, embedding_dim):
+    m = nn.Embedding(num_embeddings, embedding_dim)
+    nn.init.normal_(m.weight, mean=0, std=embedding_dim ** -0.5)
+    return m
+
+
 def LayerNorm(embedding_dim):
     m = nn.LayerNorm(embedding_dim)
     return m
@@ -853,6 +888,7 @@ def base_architecture(args):
 
     args.decoder_output_dim = getattr(args, 'decoder_output_dim', args.decoder_embed_dim)
     args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
+    args.decoder_lng_embed = getattr(args, 'decoder_lng_embed', False)
 
 
 @register_model_architecture('transformer', 'transformer_iwslt_de_en')
@@ -866,6 +902,31 @@ def transformer_iwslt_de_en(args):
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 4)
     args.decoder_layers = getattr(args, 'decoder_layers', 6)
     base_architecture(args)
+
+
+@register_model_architecture('transformer', 'transformer_iwslt_de_en_small')
+def transformer_iwslt_de_en_small(args):
+    args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 256)
+    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 256)
+    args.encoder_layers = getattr(args, 'encoder_layers', 2)
+    args.decoder_layers = getattr(args, 'decoder_layers', 2)
+    transformer_iwslt_de_en(args)
+
+
+@register_model_architecture('transformer', 'transformer_iwslt_de_en_tiny')
+def transformer_iwslt_de_en_tiny(args):
+    args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 128)
+    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 128)
+    args.encoder_layers = getattr(args, 'encoder_layers', 2)
+    args.decoder_layers = getattr(args, 'decoder_layers', 2)
+    transformer_iwslt_de_en(args)
+
+
+@register_model_architecture('transformer', 'transformer_iwslt_de_en_small6')
+def transformer_iwslt_de_en_small6(args):
+    args.encoder_layers = getattr(args, 'encoder_layers', 6)
+    args.decoder_layers = getattr(args, 'decoder_layers', 6)
+    transformer_iwslt_de_en_small(args)
 
 
 @register_model_architecture('transformer', 'transformer_wmt_en_de')

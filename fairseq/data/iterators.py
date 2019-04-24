@@ -87,7 +87,7 @@ class EpochBatchIterator(object):
         self._cur_epoch_itr = None
         self._next_epoch_itr = None
         self._supports_prefetch = (
-            hasattr(dataset, 'supports_prefetch') and dataset.supports_prefetch
+                hasattr(dataset, 'supports_prefetch') and dataset.supports_prefetch
         )
 
     def __len__(self):
@@ -133,15 +133,16 @@ class EpochBatchIterator(object):
             'iterations_in_epoch': self.iterations_in_epoch,
         }
 
-    def load_state_dict(self, state_dict):
+    def load_state_dict(self, state_dict, reproduce=False, fix_batches_to_gpus=False):
         """Copies the state of the iterator from the given *state_dict*."""
         self.epoch = state_dict['epoch']
         itr_pos = state_dict.get('iterations_in_epoch', 0)
         if itr_pos > 0:
             # fast-forward epoch iterator
-            itr = self._get_iterator_for_epoch(self.epoch, state_dict.get('shuffle', True))
-            if itr_pos < len(itr):
-                self._next_epoch_itr = itr.skip(itr_pos)
+            itr = self._get_iterator_for_epoch(self.epoch, state_dict.get('shuffle', True), fix_batches_to_gpus)
+            if reproduce:
+                if itr_pos < len(itr):
+                    self._next_epoch_itr = itr.skip(itr_pos)
 
     def _get_iterator_for_epoch(self, epoch, shuffle, fix_batches_to_gpus=False):
 
@@ -160,7 +161,7 @@ class EpochBatchIterator(object):
 
             batches = list(ShardedIterator(
                 batches, self.num_shards, self.shard_id, fill_value=[]))
-            self.dataset.prefetch([i for s in batches for i in s])
+            # self.dataset.prefetch([i for s in batches for i in s])
 
             if shuffle and fix_batches_to_gpus:
                 batches = shuffle_batches(batches, self.seed + epoch + self.shard_id)

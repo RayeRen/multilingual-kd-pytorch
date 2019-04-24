@@ -24,7 +24,7 @@ with open('requirements.txt') as f:
 
 
 bleu = Extension(
-    'fairseq.libbleu',
+    'fairseq_lib.libbleu',
     sources=[
         'fairseq/clib/libbleu/libbleu.cpp',
         'fairseq/clib/libbleu/module.cpp',

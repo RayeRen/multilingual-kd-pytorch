@@ -15,10 +15,10 @@ from fairseq.models import FairseqIncrementalDecoder
 
 class SequenceGenerator(object):
     def __init__(
-        self, models, tgt_dict, beam_size=1, minlen=1, maxlen=None, stop_early=True,
-        normalize_scores=True, len_penalty=1, unk_penalty=0, retain_dropout=False,
-        sampling=False, sampling_topk=-1, sampling_temperature=1,
-        diverse_beam_groups=-1, diverse_beam_strength=0.5,
+            self, models, tgt_dict, beam_size=1, minlen=1, maxlen=None, stop_early=True,
+            normalize_scores=True, len_penalty=1, unk_penalty=0, retain_dropout=False,
+            sampling=False, sampling_topk=-1, sampling_temperature=1,
+            diverse_beam_groups=-1, diverse_beam_strength=0.5,
     ):
         """Generates translations of a given source sentence.
         Args:
@@ -60,8 +60,8 @@ class SequenceGenerator(object):
         return self
 
     def generate_batched_itr(
-        self, data_itr, beam_size=None, maxlen_a=0.0, maxlen_b=None,
-        cuda=False, timer=None, prefix_size=0,
+            self, data_itr, beam_size=None, maxlen_a=0.0, maxlen_b=None,
+            cuda=False, timer=None, prefix_size=0,
     ):
         """Iterate over a batched dataset and yield individual translations.
         Args:
@@ -91,7 +91,7 @@ class SequenceGenerator(object):
                 hypos = self.generate(
                     encoder_input,
                     beam_size=beam_size,
-                    maxlen=int(maxlen_a*srclen + maxlen_b),
+                    maxlen=int(maxlen_a * srclen + maxlen_b),
                     prefix_tokens=s['target'][:, :prefix_size] if prefix_size > 0 else None,
                 )
             if timer is not None:
@@ -214,10 +214,10 @@ class SequenceGenerator(object):
             tokens_clone = tokens.index_select(0, bbsz_idx)
             tokens_clone = tokens_clone[:, 1:step + 2]  # skip the first index, which is EOS
             tokens_clone[:, step] = self.eos
-            attn_clone = attn.index_select(0, bbsz_idx)[:, :, 1:step+2] if attn is not None else None
+            attn_clone = attn.index_select(0, bbsz_idx)[:, :, 1:step + 2] if attn is not None else None
 
             # compute scores per token position
-            pos_scores = scores.index_select(0, bbsz_idx)[:, :step+1]
+            pos_scores = scores.index_select(0, bbsz_idx)[:, :step + 1]
             pos_scores[:, step] = eos_scores
             # convert from cumulative to per-position scores
             pos_scores[:, 1:] = pos_scores[:, 1:] - pos_scores[:, :-1]

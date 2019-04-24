@@ -184,6 +184,8 @@ def move_to_cuda(sample):
             }
         elif isinstance(maybe_tensor, list):
             return [_move_to_cuda(x) for x in maybe_tensor]
+        elif isinstance(maybe_tensor, tuple):
+            return [_move_to_cuda(x) for x in maybe_tensor]
         else:
             return maybe_tensor
 
@@ -425,3 +427,7 @@ def resolve_max_positions(*args):
                     map(nullsafe_min, zip(max_positions, arg))
                 )
     return max_positions
+
+
+def log_stats_keys():
+    return ['num_updates', 'loss', 'ppl', 'lr', 'best', 'bleu']
